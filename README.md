@@ -6,7 +6,7 @@
 
 A GitHub Actions workflow that collects every public, non‑archived repository you own or co‑own
 into a single tidy `REPOSITORYLIST.md`, grouped by owner — and commits it back to the repository,
-every week, without you lifting a finger.
+on demand, with a single click.
 
 [![Repository List](https://github.com/OstinUA/yml-repository-list/actions/workflows/repository-list.yml/badge.svg)](https://github.com/OstinUA/yml-repository-list/actions/workflows/repository-list.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -49,7 +49,8 @@ and writes the result to `REPOSITORYLIST.md`:
 4. **Groups** them by owner, with exactly one blank line between groups.
 5. **Commits** the file back to the repository — but only when something actually changed.
 
-It runs on a schedule (every Sunday at 03:17 UTC) and can be triggered by hand at any time.
+It is **manual by design** — no schedules, no surprise commits. Press *Run workflow* whenever you
+want a fresh list (and see [Recipes](#recipes) if you ever want to put it on a cron).
 
 ---
 
@@ -92,7 +93,8 @@ organizations**. Need clickable links or bullet points instead? Switch `OUTPUT_F
 | 🗂️ | **Owner grouping** — one blank line between organizations, alphabetical inside each group |
 | 🎨 | **Three output formats** — plain text, bullet list, or clickable Markdown links |
 | ⏱️ | **Fully idempotent** — no commit is made when the list has not changed (no timestamp noise) |
-| ✋ | **Manual runs** — `workflow_dispatch` with `dry_run`, `include_forks` and `include_archived` switches |
+| ✋ | **Manual by default** — runs only when you press *Run workflow*; no crons, no surprise commits |
+| 🎛️ | **Run-time switches** — `dry_run`, `include_forks` and `include_archived` inputs for one-off runs |
 | 🧾 | **Run summary** — repository/owner counts plus a preview in the Actions summary tab |
 | 🔐 | **Least privilege** — `contents: write` only, token passed through secrets, never logged |
 | 🚦 | **Concurrency safe** — two runs can never race on the same file |
@@ -105,14 +107,14 @@ organizations**. Need clickable links or bullet points instead? Switch `OUTPUT_F
 1. **Fork or clone this repository** (or copy `.github/workflows/repository-list.yml` into your own repo).
 2. **Create a personal access token** — see [Creating the token](#creating-the-token).
 3. **Add it as a secret**: `Settings → Secrets and variables → Actions → New repository secret`
-   - Name: `MY_GH_TOKEN` (or `REPO_LIST_TOKEN` — both work, the first one that exists is used)
+   - Name: `REPOSITORY_LIST_TOKEN`
    - Value: the token you just created
 4. **Allow workflows to write**: `Settings → Actions → General → Workflow permissions →
    Read and write permissions → Save`.
 5. **Run it**: `Actions → Repository List → Run workflow`. Leave *dry run* off and press the green
    button. `REPOSITORYLIST.md` appears in your repository a few seconds later. 🎉
 
-From then on the list refreshes itself every Sunday.
+That is it — re-run the workflow whenever you want the list refreshed.
 
 ---
 
@@ -130,7 +132,7 @@ runs in and cannot list your other repositories. A personal access token is requ
    - `public_repo` — read public repositories (and push to this public repo);
    - `repo` — **only** if you want private repositories listed too;
    - `read:org` — recommended, so organization repositories are resolved reliably.
-4. Generate, copy the value, and store it as the `MY_GH_TOKEN` secret.
+4. Generate, copy the value, and store it as the `REPOSITORY_LIST_TOKEN` secret.
 </details>
 
 <details>
@@ -144,7 +146,7 @@ runs in and cannot list your other repositories. A personal access token is requ
      repository only, via *Only select repositories* + *All repositories* for Metadata).
 4. For organizations, an organization owner may have to approve the token
    (`Organization settings → Personal access tokens → Pending requests`).
-5. Generate, copy the value, and store it as the `MY_GH_TOKEN` secret.
+5. Generate, copy the value, and store it as the `REPOSITORY_LIST_TOKEN` secret.
 </details>
 
 ---
@@ -168,7 +170,7 @@ needs to be touched.
 | `INCLUDE_FORKS` | `"true"` | Include forked repositories. Set `"false"` to keep only your own work. |
 | `EXCLUDE_REPOS` | `".github"` | Comma‑separated names (`docs`) or slugs (`owner/docs`) to skip. Spaces are ignored. Leave empty to skip nothing. |
 | `AFFILIATION` | `"owner,organization_member"` | Comma‑separated affiliations passed to the API: `owner`, `organization_member`, `collaborator`. |
-| `GH_TOKEN` secret | — | `REPO_LIST_TOKEN` or `MY_GH_TOKEN`, whichever exists. |
+| `REPOSITORY_LIST_TOKEN` secret | — | Personal access token used for both the API calls and the push. Required. |
 
 Repositories with the **Disabled** flag are always skipped — they are not readable through the API.
 
@@ -220,8 +222,8 @@ entry becomes a clickable repository link while keeping the exact `owner/repo` l
 
 ```text
         ┌──────────────────────────┐
-        │  schedule: weekly cron   │──┐
-        │  or workflow_dispatch    │  │
+        │  workflow_dispatch       │  │
+        │  (manual "Run workflow") │  │
         └──────────────────────────┘  │
                                       ▼
                        ┌───────────────────────────────┐
@@ -267,12 +269,16 @@ Each step of the workflow:
 ## Recipes
 
 <details>
-<summary><b>Change the refresh schedule</b></summary>
+<summary><b>Refresh automatically on a schedule</b></summary>
+
+The workflow ships manual-only. To also refresh it on a cron, add a `schedule` trigger next to
+`workflow_dispatch`:
 
 ```yaml
 on:
   schedule:
-    - cron: "0 */6 * * *"   # every 6 hours
+    - cron: "0 3 * * 0"      # every Sunday at 03:00 UTC
+  workflow_dispatch:
 ```
 </details>
 

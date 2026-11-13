@@ -6,9 +6,9 @@
 #  by owner and separated by a blank line.
 #
 #  Requirements:
-#    * a personal access token stored in the MY_GH_TOKEN secret (or
-#      REPO_LIST_TOKEN) with permission to read your repositories and to push
-#      to this repository - see README.md for the exact scopes;
+#    * a personal access token stored in the REPOSITORY_LIST_TOKEN secret with
+#      permission to read your repositories and to push to this repository -
+#      see README.md for the exact scopes;
 #    * Actions enabled for this repository.
 #
 #  Everything below is configurable through the `env:` block.
@@ -16,11 +16,10 @@
 
 name: Repository List
 
+#  Runs on demand only - no schedule. To refresh the list automatically, add:
+#      schedule:
+#        - cron: "0 3 * * 0"   # every Sunday at 03:00 UTC
 on:
-  # Refresh the list once a week (Sunday, 03:17 UTC). Change or add crons here.
-  schedule:
-    - cron: "17 3 * * 0"
-
   # Manual runs, with optional one-off overrides.
   workflow_dispatch:
     inputs:
@@ -82,23 +81,23 @@ jobs:
     steps:
       - name: Check the token is configured
         env:
-          GH_TOKEN: ${{ secrets.REPO_LIST_TOKEN || secrets.MY_GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPOSITORY_LIST_TOKEN }}
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error title=Missing token::Add a personal access token as the MY_GH_TOKEN (or REPO_LIST_TOKEN) repository secret. See README.md."
+            echo "::error title=Missing token::Add a personal access token as the REPOSITORY_LIST_TOKEN repository secret. See README.md."
             exit 1
           fi
 
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.REPO_LIST_TOKEN || secrets.MY_GH_TOKEN }}
+          token: ${{ secrets.REPOSITORY_LIST_TOKEN }}
           persist-credentials: true
 
       - name: Fetch repositories
         id: fetch
         env:
-          GH_TOKEN: ${{ secrets.REPO_LIST_TOKEN || secrets.MY_GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPOSITORY_LIST_TOKEN }}
           # Manual runs may override the defaults from `env:` above.
           OVERRIDE_FORKS: ${{ inputs.include_forks }}
           OVERRIDE_ARCHIVED: ${{ inputs.include_archived }}
