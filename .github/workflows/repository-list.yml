@@ -1,0 +1,264 @@
+# =============================================================================
+#  Repository List
+# -----------------------------------------------------------------------------
+#  Builds REPOSITORYLIST.md - a single, alphabetically grouped list of every
+#  repository you have access to (public, non-archived, non-disabled), grouped
+#  by owner and separated by a blank line.
+#
+#  Requirements:
+#    * a personal access token stored in the MY_GH_TOKEN secret (or
+#      REPO_LIST_TOKEN) with permission to read your repositories and to push
+#      to this repository - see README.md for the exact scopes;
+#    * Actions enabled for this repository.
+#
+#  Everything below is configurable through the `env:` block.
+# =============================================================================
+
+name: Repository List
+
+on:
+  # Refresh the list once a week (Sunday, 03:17 UTC). Change or add crons here.
+  schedule:
+    - cron: "17 3 * * 0"
+
+  # Manual runs, with optional one-off overrides.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the list but do not commit or push it"
+        type: boolean
+        default: false
+      include_forks:
+        description: "Include forked repositories in the list"
+        type: boolean
+        default: true
+      include_archived:
+        description: "Include archived repositories in the list"
+        type: boolean
+        default: false
+
+# Only the contents of this repository need to be written.
+permissions:
+  contents: write
+
+# Never let two runs write the file at the same time.
+concurrency:
+  group: repository-list
+  cancel-in-progress: false
+
+env:
+  # ---- output ---------------------------------------------------------------
+  OUTPUT_FILE: REPOSITORYLIST.md
+  # plain   -> owner/repo
+  # bullets -> - owner/repo
+  # links   -> - [owner/repo](https://github.com/owner/repo)
+  OUTPUT_FORMAT: plain
+  # In `plain` mode, add two trailing spaces to every line so Markdown renders
+  # one repository per line instead of one long wrapped paragraph.
+  HARD_LINE_BREAKS: "true"
+  # Adds a "last updated" line to the header. Keep it "false" for idempotent
+  # output (the file then changes only when the repository list really changes).
+  INCLUDE_TIMESTAMP: "false"
+
+  # ---- what to include ------------------------------------------------------
+  INCLUDE_PRIVATE: "false"
+  INCLUDE_ARCHIVED: "false"
+  INCLUDE_FORKS: "true"
+  # Comma-separated names or full owner/name slugs to skip, e.g. ".github,docs".
+  EXCLUDE_REPOS: ".github"
+  # Which repositories the API should return:
+  #   owner                     -> repositories you own personally
+  #   owner,organization_member -> the above + repositories of your organizations
+  #   owner,organization_member,collaborator -> the above + repositories you
+  #                                              were invited to collaborate on
+  AFFILIATION: "owner,organization_member"
+
+jobs:
+  build:
+    name: Build and commit the repository list
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check the token is configured
+        env:
+          GH_TOKEN: ${{ secrets.REPO_LIST_TOKEN || secrets.MY_GH_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error title=Missing token::Add a personal access token as the MY_GH_TOKEN (or REPO_LIST_TOKEN) repository secret. See README.md."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REPO_LIST_TOKEN || secrets.MY_GH_TOKEN }}
+          persist-credentials: true
+
+      - name: Fetch repositories
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.REPO_LIST_TOKEN || secrets.MY_GH_TOKEN }}
+          # Manual runs may override the defaults from `env:` above.
+          OVERRIDE_FORKS: ${{ inputs.include_forks }}
+          OVERRIDE_ARCHIVED: ${{ inputs.include_archived }}
+        run: |
+          set -euo pipefail
+
+          # Fall back to sensible defaults if a variable was removed from `env:`.
+          : "${OUTPUT_FILE:=REPOSITORYLIST.md}"
+          : "${OUTPUT_FORMAT:=plain}"
+          : "${HARD_LINE_BREAKS:=true}"
+          : "${INCLUDE_TIMESTAMP:=false}"
+          : "${INCLUDE_PRIVATE:=false}"
+          : "${INCLUDE_ARCHIVED:=false}"
+          : "${INCLUDE_FORKS:=true}"
+          : "${EXCLUDE_REPOS:=}"
+          : "${AFFILIATION:=owner,organization_member}"
+
+          tmp="$(mktemp -d)"
+          raw="$tmp/repos.tsv"
+
+          # --- resolve settings (dispatch input wins over the env default) -----
+          include_forks="${OVERRIDE_FORKS:-$INCLUDE_FORKS}"
+          include_archived="${OVERRIDE_ARCHIVED:-$INCLUDE_ARCHIVED}"
+          include_private="$INCLUDE_PRIVATE"
+
+          # --- fetch every page of repositories --------------------------------
+          query="user/repos?per_page=100&sort=full_name"
+          if [ -n "${AFFILIATION:-}" ]; then
+            query="$query&affiliation=$AFFILIATION"
+          fi
+
+          echo "Fetching: $query"
+          if ! gh api --paginate "$query" \
+            --jq '.[] | [.owner.login, .name, (.fork | tostring), (.archived | tostring), (.private | tostring), (.disabled | tostring)] | @tsv' \
+            > "$raw"; then
+            echo "::error title=API request failed::Could not list repositories. Check that the token is valid and has read access to your repositories (see README.md)."
+            exit 1
+          fi
+
+          echo "Raw repositories returned: $(wc -l < "$raw")"
+
+          # --- filter, sort, group ---------------------------------------------
+          awk -F'\t' \
+            -v include_forks="$include_forks" \
+            -v include_archived="$include_archived" \
+            -v include_private="$include_private" \
+            -v excluded="$EXCLUDE_REPOS" '
+              BEGIN {
+                n = split(excluded, list, ",")
+                for (i = 1; i <= n; i++) {
+                  item = list[i]
+                  gsub(/^[ \t]+|[ \t]+$/, "", item)
+                  skip[item] = 1
+                }
+              }
+              {
+                owner = $1; name = $2
+                if ($3 == "true" && include_forks    == "false") next
+                if ($4 == "true" && include_archived == "false") next
+                if ($5 == "true" && include_private  == "false") next
+                if ($6 == "true") next                       # disabled repositories
+                if (name == "" || owner == "") next
+                full = owner "/" name
+                if (full in skip || name in skip) next
+                print full
+              }
+            ' "$raw" \
+          | LC_ALL=C sort -f -u -t'/' -k1,1 -k2,2 \
+          > "$tmp/sorted.txt"
+
+          total="$(grep -c . "$tmp/sorted.txt" || true)"
+          if [ "$total" -eq 0 ]; then
+            echo "::error title=Empty list::No repositories matched the current filters. Check the token scopes and the AFFILIATION / INCLUDE_* settings."
+            exit 1
+          fi
+
+          owners="$(cut -d'/' -f1 "$tmp/sorted.txt" | LC_ALL=C sort -fu | wc -l)"
+
+          # --- render the markdown file -----------------------------------------
+          awk -F'/' \
+            -v fmt="$OUTPUT_FORMAT" \
+            -v hard="$HARD_LINE_BREAKS" '
+              {
+                if (NR > 1 && $1 != previous_owner) print ""
+                if      (fmt == "bullets") line = "- " $0
+                else if (fmt == "links")   line = "- [" $0 "](https://github.com/" $0 ")"
+                else                       line = (hard == "true" ? $0 "  " : $0)
+                print line
+                previous_owner = $1
+              }
+            ' "$tmp/sorted.txt" > "$tmp/body.md"
+
+          mkdir -p "$(dirname "$OUTPUT_FILE")"
+
+          {
+            echo "<!-- Auto-generated by .github/workflows/repository-list.yml. Do not edit manually. -->"
+            echo
+            echo "# Repository List"
+            echo
+            printf '**%s** repositories · **%s** owners' "$total" "$owners"
+            if [ "$INCLUDE_TIMESTAMP" = "true" ]; then
+              printf ' · last updated **%s**' "$(date -u '+%Y-%m-%d %H:%M UTC')"
+            fi
+            echo
+            echo
+            cat "$tmp/body.md"
+          } > "$OUTPUT_FILE"
+
+          echo "Repositories: $total"
+          echo "Owners: $owners"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "owners=$owners" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise the run
+        if: always()
+        run: |
+          {
+            echo "### Repository List"
+            echo
+            if [ -f "$OUTPUT_FILE" ]; then
+              echo "| Metric | Value |"
+              echo "| --- | --- |"
+              echo "| Repositories | ${{ steps.fetch.outputs.total || 'n/a' }} |"
+              echo "| Owners | ${{ steps.fetch.outputs.owners || 'n/a' }} |"
+              echo "| Format | \`$OUTPUT_FORMAT\` |"
+              echo
+              echo "<details><summary>Preview</summary>"
+              echo
+              echo '```'
+              head -n 25 "$OUTPUT_FILE"
+              echo '```'
+              echo
+              echo "</details>"
+            else
+              echo "The list was not generated - see the logs above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit and push changes
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          : "${OUTPUT_FILE:=REPOSITORYLIST.md}"
+
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "Dry run - nothing will be committed."
+            exit 0
+          fi
+
+          git add -- "$OUTPUT_FILE"
+
+          if git diff --cached --quiet; then
+            echo "No changes in the repository list."
+            exit 0
+          fi
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "chore: update repository list"
+          git push
